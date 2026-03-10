@@ -109,7 +109,7 @@ async function startServer() {
             // Error Handler
             app.use(errorHandler)
 
-            app.listen(DEFAULT_PORT, () => {
+            app.listen(DEFAULT_PORT, '0.0.0.0', () => {
                 logger.info(`Server running on ${DEFAULT_PORT} ✅ `) //Log the actual port
             })
         }

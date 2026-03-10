@@ -73,4 +73,4 @@ COPY --from=build /usr/src/app/dist ./dist
 EXPOSE 3000
 
 # Run the application.
-CMD pnpm start
+CMD NODE_ENV=production node dist/server/server.js

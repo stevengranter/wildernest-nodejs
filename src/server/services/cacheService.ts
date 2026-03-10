@@ -65,28 +65,36 @@ export const tieredCacheService: ICacheService = {
             return value
         }
 
-        value = await redisCacheService.get<T>(key)
-        if (value) {
-            await memoryCacheService.set(key, value)
-        }
+        try {
+            value = await redisCacheService.get<T>(key)
+            if (value) {
+                await memoryCacheService.set(key, value)
+            }
+        } catch (_) { /* redis unavailable, use memory cache only */ }
         return value
     },
 
     set: async <T>(key: string, value: T): Promise<boolean> => {
         const memoryResult = await memoryCacheService.set(key, value)
-        const redisResult = await redisCacheService.set(key, value)
-        return memoryResult && redisResult
+        try {
+            await redisCacheService.set(key, value)
+        } catch (_) { /* redis unavailable */ }
+        return memoryResult
     },
 
     del: async (key: string): Promise<boolean> => {
         const memoryResult = await memoryCacheService.del(key)
-        const redisResult = await redisCacheService.del(key)
-        return !!(memoryResult && redisResult)
+        try {
+            await redisCacheService.del(key)
+        } catch (_) { /* redis unavailable */ }
+        return !!memoryResult
     },
 
     flush: async (): Promise<void> => {
         await memoryCacheService.flush()
-        await redisCacheService.flush()
+        try {
+            await redisCacheService.flush()
+        } catch (_) { /* redis unavailable */ }
     },
 }
 export const cacheService = tieredCacheService

@@ -12,6 +12,7 @@ import { INatObservation, INatTaxon } from '../../shared/types/iNaturalist.js'
 import { AppError } from '../middlewares/errorHandler.js'
 
 const INATURALIST_API_BASE_URL = 'https://api.inaturalist.org/v1'
+const INAT_TAXA_BATCH_LIMIT = 30
 
 type ProcessableData =
     | INatTaxon
@@ -19,6 +20,23 @@ type ProcessableData =
     | (INatTaxon | INatObservation)[]
     | { results: INatTaxon[]; total_results?: number; page?: number }
     | { results: INatObservation[]; total_results?: number; page?: number }
+
+async function fetchTaxaBatched(ids: string[], query: string): Promise<INatTaxon[]> {
+    const allTaxa: INatTaxon[] = []
+    for (let i = 0; i < ids.length; i += INAT_TAXA_BATCH_LIMIT) {
+        const chunk = ids.slice(i, i + INAT_TAXA_BATCH_LIMIT)
+        const batchUrl = `${INATURALIST_API_BASE_URL}/taxa/${chunk.join(',')}${query ? `?${query}` : ''}`
+        const response = await getWithRetry<ProcessableData>(batchUrl, undefined, { retryOn429: true, maxRetries: 3 })
+        if (response.status !== 200) {
+            throw new AppError('Failed to fetch data from iNaturalist', response.status)
+        }
+        const processed = processINaturalistData(response.data)
+        if ('results' in processed && Array.isArray(processed.results)) {
+            allTaxa.push(...(processed.results as INatTaxon[]))
+        }
+    }
+    return allTaxa
+}
 
 function processINaturalistData(data: ProcessableData): ProcessableData {
     if (Array.isArray(data)) {
@@ -131,41 +149,15 @@ export const iNaturalistAPIController = async (req: Request, res: Response) => {
                 )
             } else if (uncachedTaxonIds.length < taxonIds.length) {
                 // Partial cache hit - fetch only uncached taxa
-                const partialUrl = `${INATURALIST_API_BASE_URL}/taxa/${uncachedTaxonIds.join(',')}${query ? `?${query}` : ''}`
                 logger.info(
                     `🔍 Fetching ${uncachedTaxonIds.length} uncached taxa, ${cachedTaxa.length} from cache`
                 )
 
-                const partialResponse = await getWithRetry<ProcessableData>(
-                    partialUrl,
-                    undefined,
-                    {
-                        retryOn429: true,
-                        maxRetries: 3, // Reduce retries for deduplication efficiency
-                    }
-                )
-                if (partialResponse.status !== 200) {
-                    throw new AppError(
-                        'Failed to fetch data from iNaturalist',
-                        partialResponse.status
-                    )
-                }
-
-                const partialProcessedData = processINaturalistData(
-                    partialResponse.data
-                )
+                const freshTaxa = await fetchTaxaBatched(uncachedTaxonIds, query)
 
                 // Combine cached and fresh results
-                const allTaxa = [...cachedTaxa]
-                if (
-                    'results' in partialProcessedData &&
-                    Array.isArray(partialProcessedData.results)
-                ) {
-                    // Type assertion since we know this is a taxa response
-                    allTaxa.push(
-                        ...(partialProcessedData.results as INatTaxon[])
-                    )
-                }
+                const allTaxa = [...cachedTaxa, ...freshTaxa]
+                const partialProcessedData: { results: INatTaxon[] } = { results: freshTaxa }
 
                 // Sort by original order
                 const taxonOrder = new Map(
@@ -191,15 +183,9 @@ export const iNaturalistAPIController = async (req: Request, res: Response) => {
                     }
                 }
             } else {
-                // No cache hits - proceed with normal flow
-                const jsonResponse = await getWithRetry<ProcessableData>(url)
-                if (jsonResponse.status !== 200) {
-                    throw new AppError(
-                        'Failed to fetch data from iNaturalist',
-                        jsonResponse.status
-                    )
-                }
-                finalProcessedData = processINaturalistData(jsonResponse.data)
+                // No cache hits - fetch all in batches
+                const allTaxa = await fetchTaxaBatched(taxonIds, query)
+                finalProcessedData = { results: allTaxa }
             }
         } else {
             // Single taxon request - use normal flow
